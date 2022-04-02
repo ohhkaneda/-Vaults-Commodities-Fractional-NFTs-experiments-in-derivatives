@@ -1,0 +1,3 @@
+chainlink/=lib/chainlink-brownie-contracts/
+solmate/=lib/solmate/src/
+ds-test/=lib/ds-test/src/
