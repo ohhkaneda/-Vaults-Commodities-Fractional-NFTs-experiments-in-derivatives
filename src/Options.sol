@@ -2,9 +2,9 @@
 pragma solidity >=0.8.7 <0.9.0;
 
 import "chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-import "solmate/utils/ReentrancyGuard.sol";
-import "solmate/auth/Auth.sol";
-import "solmate/tokens/ERC20.sol";
+import "openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
+import "openzeppelin-contracts/contracts/access/Ownable.sol";
+import "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 
 ///@title DAI/ETH COVERED OPTIONS
 ///@author tobias
@@ -23,16 +23,24 @@ import "solmate/tokens/ERC20.sol";
 ///1. Covered Calls - You sell upside on an asset while you hold it for yield, which comes from premium (Netural/Bullish on asset).
 ///2. Cash-secured Puts - You earn yeild on cash (Bullish).
 
-contract Options is ReentrancyGuard, Auth {
+contract Options is ReentrancyGuard, Ownable {
+    ///-----------------------------------------///
+    ///--------------STORAGE
+    ///----------------------------------------///
+
     AggregatorV3Interface internal daiEthPriceFeed;
 
-    ERC20 dai;
+    IERC20 dai;
 
     uint256 public optionCounter;
 
     mapping(address => address) public tokenToEthFeed;
     mapping(uint256 => Option) public optionIdToOption;
     mapping(address => uint256[]) public tradersPosition;
+
+    ///-----------------------------------------///
+    ///--------------ENUMS & STRUCTS
+    ///----------------------------------------///
 
     enum OptionState {
         Open,
@@ -58,17 +66,17 @@ contract Options is ReentrancyGuard, Auth {
         OptionType optionType;
     }
 
-    /**************/
-    /* ERRORS */
-    /*************/
+    ///-----------------------------------------///
+    ///--------------ERRORS
+    ///----------------------------------------///
 
     error TransferFailed();
     error NeedsMoreThanZero();
     error OptionNotValid(uint256 _optionId);
 
-    /**************/
-    /* EVENTS */
-    /*************/
+    ///-----------------------------------------///
+    ///--------------EVENTS
+    ///----------------------------------------///
 
     event CallOptionOpen(
         address writer,
@@ -94,9 +102,9 @@ contract Options is ReentrancyGuard, Auth {
     event FundsRetrieved(address writer, uint256 id, uint256 value);
     event AllowedTokenSet(address token, address priceFeed);
 
-    /**************/
-    /* CONSTRUCTOR */
-    /*************/
+    ///-----------------------------------------///
+    ///--------------CONSTRUCTOR
+    ///----------------------------------------///
 
     ///CHAINLINK PRICEFEEDS & DAI ADDRESSES FOR EASE OF USE
     ///NETWORK: KOVAN
@@ -107,12 +115,12 @@ contract Options is ReentrancyGuard, Auth {
     ///Rinkeby DAI Addr: 0x4f96fe3b7a6cf9725f59d353f723c1bdb64ca6aa (faucet token)
     constructor(address _priceFeed, address _daiAddr) {
         daiEthPriceFeed = AggregatorV3Interface(_priceFeed);
-        dai = ERC20(_daiAddr);
+        dai = IERC20(_daiAddr);
     }
 
-    /**************************/
-    /* CALL OPTION FUNCTIONS */
-    /************************/
+    ///-----------------------------------------///
+    ///--------------CALL OPTION FUNCTIONS
+    ///----------------------------------------///
 
     function writeCallOption(
         uint256 _amount,
@@ -206,9 +214,9 @@ contract Options is ReentrancyGuard, Auth {
         emit CallOptionExercised(msg.sender, _optionId);
     }
 
-    /**************************/
-    /* PUT OPTION FUNCTIONS */
-    /************************/
+    ///-----------------------------------------///
+    ///--------------PUT OPTION FUNCTIONS
+    ///----------------------------------------///
 
     function writePutOption(
         uint256 _amount,
@@ -301,9 +309,9 @@ contract Options is ReentrancyGuard, Auth {
         emit PutOptionExercised(msg.sender, _optionId);
     }
 
-    /**************************/
-    /* EXTRA OPTION FUNCTIONS */
-    /************************/
+    ///-----------------------------------------///
+    ///--------------ADDITIONAL FUNCTIONS
+    ///----------------------------------------///
 
     function optionExpiresWorthless(uint256 _optionId)
         external
@@ -345,33 +353,34 @@ contract Options is ReentrancyGuard, Auth {
         emit FundsRetrieved(msg.sender, _optionId, option.collateral);
     }
 
-    /*****************************/
-    /* Owner Withdraw Functions */
-    /****************************/
+    ///-----------------------------------------///
+    ///--------------OWNER FUNCTIONS
+    ///----------------------------------------///
 
-    function withdrawEth(address payable _to) public requiresAuth {
-        (bool withdrawSuccess, ) = _to.call{value: address(this).balance}("");
+    function withdrawEth(address payable _to) public onlyOwner {
+        uint256 balance = address(this).balance;
+        (bool withdrawSuccess, ) = _to.call{value: balance}("");
         require(withdrawSuccess, "ETH WITHDRAW FAILED");
     }
 
-    function withdrawDai(address payable _to) public requiresAuth {
+    function withdrawDai(address payable _to) public onlyOwner {
         uint256 daiBalance = dai.balanceOf(address(this));
         (bool withdrawSuccess, ) = _to.call{value: daiBalance}("");
         require(withdrawSuccess, "DAI WITHDRAW FAILED");
     }
 
-    /*********************************/
-    /* Oracle (Chainlink) Functions */
-    /*********************************/
+    ///-----------------------------------------///
+    ///--------------ORACLE(CHAINLINK) FUNCTIONS
+    ///----------------------------------------///
 
     function getPriceFeed() public view returns (uint256) {
         (, int256 price, , , ) = daiEthPriceFeed.latestRoundData();
         return (uint256(price)) / 1e18;
     }
 
-    /**************/
-    /* Modifiers */
-    /*************/
+    ///-----------------------------------------///
+    ///--------------MODIFIERS
+    ///----------------------------------------///
 
     modifier moreThanZero(
         uint256 amount,
