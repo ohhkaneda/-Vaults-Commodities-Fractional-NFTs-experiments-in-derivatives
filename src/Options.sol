@@ -6,18 +6,20 @@ import "solmate/utils/ReentrancyGuard.sol";
 import "solmate/auth/Auth.sol";
 import "solmate/tokens/ERC20.sol";
 
-///@notice Calls: Let you buy an asset at a set price on a specific date.
-///@notice Puts: Let you sell an asset at a set price on a specific date.
+///@title DAI/ETH COVERED OPTIONS
+///@author tobias
 ///@notice This Smart Contract allows for the buying/writing of Covered Calls & Cash-Secured Puts with ETH as the underlying.
-///@notice Covered Call: The seller(writer) transfers ETH for collateral and writes a Covered Call. The buyer pays premium w DAI.
-///@notice Covered Call: At expiration, the buyer has right to ETH at strike price if market price is greater than strike price. Settles with DAI.
-///@notice Cash-Secured Put: The writer transfers ETH for collateral. Buyer pays premium w DAI.
-///@notice Cash-Secured Put: At expiration, if market price less than strike, buyer has right to sell ETH at the strike. Settles w DAI.
-///@notice All options have the following properties:
+/// Calls: Let you buy an asset at a set price on a specific date.
+/// Puts: Let you sell an asset at a set price on a specific date.
+/// Covered Call: The seller(writer) transfers ETH for collateral and writes a Covered Call. The buyer pays premium w DAI.
+/// Covered Call: At expiration, the buyer has right to ETH at strike price if market price is greater than strike price. Settles with DAI.
+/// Cash-Secured Put: The writer transfers ETH for collateral. Buyer pays premium w DAI.
+/// Cash-Secured Put: At expiration, if market price less than strike, buyer has right to sell ETH at the strike. Settles w DAI.
+/// All options have the following properties:
 /// Strike price - The price at which the underlying asset can either be bought or sold.
 /// Expiry - The date at which the option expires.
 /// Premium - The price of the options contract.
-///@notice This smart contract supports two strategies for option writer:
+///This smart contract supports two strategies for option writer:
 ///1. Covered Calls - You sell upside on an asset while you hold it for yield, which comes from premium (Netural/Bullish on asset).
 ///2. Cash-secured Puts - You earn yeild on cash (Bullish).
 
@@ -26,11 +28,11 @@ contract Options is ReentrancyGuard, Auth {
 
     ERC20 dai;
 
-    uint256 public s_optionCounter;
+    uint256 public optionCounter;
 
-    mapping(address => address) public s_tokenToEthFeed;
-    mapping(uint256 => Option) public s_optionIdToOption;
-    mapping(address => uint256[]) public s_tradersPosition;
+    mapping(address => address) public tokenToEthFeed;
+    mapping(uint256 => Option) public optionIdToOption;
+    mapping(address => uint256[]) public tradersPosition;
 
     enum OptionState {
         Open,
@@ -56,12 +58,18 @@ contract Options is ReentrancyGuard, Auth {
         OptionType optionType;
     }
 
-    ///ERRORS
+    /**************/
+    /* ERRORS */
+    /*************/
+
     error TransferFailed();
     error NeedsMoreThanZero();
     error OptionNotValid(uint256 _optionId);
 
-    ///EVENTS
+    /**************/
+    /* EVENTS */
+    /*************/
+
     event CallOptionOpen(
         address writer,
         uint256 amount,
@@ -86,19 +94,25 @@ contract Options is ReentrancyGuard, Auth {
     event FundsRetrieved(address writer, uint256 id, uint256 value);
     event AllowedTokenSet(address token, address priceFeed);
 
-    ///@notice CHAINLINK PRICEFEEDS
+    /**************/
+    /* CONSTRUCTOR */
+    /*************/
+
+    ///CHAINLINK PRICEFEEDS & DAI ADDRESSES FOR EASE OF USE
     ///NETWORK: KOVAN
     ///DAI/ETH Address: 0x22B58f1EbEDfCA50feF632bD73368b2FdA96D541
     ///Kovan DAI Addr: 0x4f96fe3b7a6cf9725f59d353f723c1bdb64ca6aa
     ///NETWORK: RINKEBY
     ///DAI/ETH Address: 0x74825DbC8BF76CC4e9494d0ecB210f676Efa001D
     ///Rinkeby DAI Addr: 0x4f96fe3b7a6cf9725f59d353f723c1bdb64ca6aa (faucet token)
-    ///NETWORK: LOCALHOST
-    ///DAI/ETH Address: 0x773616E4d11A78F511299002da57A0a94577F1f4
     constructor(address _priceFeed, address _daiAddr) {
         daiEthPriceFeed = AggregatorV3Interface(_priceFeed);
         dai = ERC20(_daiAddr);
     }
+
+    /**************************/
+    /* CALL OPTION FUNCTIONS */
+    /************************/
 
     function writeCallOption(
         uint256 _amount,
@@ -108,7 +122,7 @@ contract Options is ReentrancyGuard, Auth {
     ) external payable moreThanZero(_amount, _strike, _premiumDue) {
         require(msg.value == _strike, "CALL: NO ETH COLLATERAL");
 
-        s_optionIdToOption[s_optionCounter] = Option(
+        optionIdToOption[optionCounter] = Option(
             msg.sender,
             address(0),
             _amount,
@@ -120,8 +134,8 @@ contract Options is ReentrancyGuard, Auth {
             OptionType.Call
         );
 
-        s_tradersPosition[msg.sender].push(s_optionCounter);
-        s_optionCounter++;
+        tradersPosition[msg.sender].push(optionCounter);
+        optionCounter++;
 
         emit CallOptionOpen(
             msg.sender,
@@ -139,7 +153,7 @@ contract Options is ReentrancyGuard, Auth {
         isValidOpenOption(_optionId)
         nonReentrant
     {
-        Option memory option = s_optionIdToOption[_optionId];
+        Option memory option = optionIdToOption[_optionId];
 
         require(option.optionType == OptionType.Call, "NOT A CALL");
 
@@ -154,70 +168,9 @@ contract Options is ReentrancyGuard, Auth {
         //dai transfered to writer
         dai.transfer(option.writer, option.premiumDue);
 
-        s_optionIdToOption[_optionId].buyer = msg.sender;
-        s_optionIdToOption[_optionId].optionState = OptionState.Bought;
-        s_tradersPosition[msg.sender].push(_optionId);
-
-        emit CallOptionBought(msg.sender, _optionId);
-    }
-
-    function writePutOption(
-        uint256 _amount,
-        uint256 _strike,
-        uint256 _premiumDue,
-        uint256 _daysToExpiry
-    ) external payable moreThanZero(_amount, _strike, _premiumDue) {
-        require(msg.value == _strike, "PUT: NO ETH COLLATERAL");
-
-        s_optionIdToOption[s_optionCounter] = Option(
-            msg.sender,
-            address(0),
-            _amount,
-            _strike,
-            _premiumDue,
-            block.timestamp + _daysToExpiry,
-            msg.value,
-            OptionState.Open,
-            OptionType.Put
-        );
-
-        s_tradersPosition[msg.sender].push(s_optionCounter);
-        s_optionCounter++;
-
-        emit PutOptionOpen(
-            msg.sender,
-            _amount,
-            _strike,
-            _premiumDue,
-            block.timestamp + _daysToExpiry,
-            msg.value
-        );
-    }
-
-    function buyPutOption(uint256 _optionId)
-        external
-        optionExists(_optionId)
-        isValidOpenOption(_optionId)
-        nonReentrant
-    {
-        Option memory option = s_optionIdToOption[_optionId];
-
-        require(option.optionType == OptionType.Put, "NOT A PUT");
-
-        //pay premium w dai
-        bool paid = dai.transferFrom(
-            msg.sender,
-            address(this),
-            option.premiumDue
-        );
-        if (!paid) revert TransferFailed();
-
-        //transfer premium to writer
-        dai.transfer(option.writer, option.premiumDue);
-
-        s_optionIdToOption[_optionId].buyer = msg.sender;
-        s_optionIdToOption[_optionId].optionState = OptionState.Bought;
-        s_tradersPosition[msg.sender].push(_optionId);
+        optionIdToOption[_optionId].buyer = msg.sender;
+        optionIdToOption[_optionId].optionState = OptionState.Bought;
+        tradersPosition[msg.sender].push(_optionId);
 
         emit CallOptionBought(msg.sender, _optionId);
     }
@@ -228,7 +181,7 @@ contract Options is ReentrancyGuard, Auth {
         optionExists(_optionId)
         nonReentrant
     {
-        Option memory option = s_optionIdToOption[_optionId];
+        Option memory option = optionIdToOption[_optionId];
 
         require(msg.sender == option.buyer, "NOT BUYER");
         require(option.optionState == OptionState.Bought, "NEVER BOUGHT");
@@ -248,9 +201,74 @@ contract Options is ReentrancyGuard, Auth {
         //transfer dai to option writer
         dai.transfer(option.writer, option.strike);
 
-        s_optionIdToOption[_optionId].optionState = OptionState.Exercised;
+        optionIdToOption[_optionId].optionState = OptionState.Exercised;
 
         emit CallOptionExercised(msg.sender, _optionId);
+    }
+
+    /**************************/
+    /* PUT OPTION FUNCTIONS */
+    /************************/
+
+    function writePutOption(
+        uint256 _amount,
+        uint256 _strike,
+        uint256 _premiumDue,
+        uint256 _daysToExpiry
+    ) external payable moreThanZero(_amount, _strike, _premiumDue) {
+        require(msg.value == _strike, "PUT: NO ETH COLLATERAL");
+
+        optionIdToOption[optionCounter] = Option(
+            msg.sender,
+            address(0),
+            _amount,
+            _strike,
+            _premiumDue,
+            block.timestamp + _daysToExpiry,
+            msg.value,
+            OptionState.Open,
+            OptionType.Put
+        );
+
+        tradersPosition[msg.sender].push(optionCounter);
+        optionCounter++;
+
+        emit PutOptionOpen(
+            msg.sender,
+            _amount,
+            _strike,
+            _premiumDue,
+            block.timestamp + _daysToExpiry,
+            msg.value
+        );
+    }
+
+    function buyPutOption(uint256 _optionId)
+        external
+        optionExists(_optionId)
+        isValidOpenOption(_optionId)
+        nonReentrant
+    {
+        Option memory option = optionIdToOption[_optionId];
+
+        require(option.optionType == OptionType.Put, "NOT A PUT");
+
+        //pay premium w dai
+        bool paid = dai.transferFrom(
+            msg.sender,
+            address(this),
+            option.premiumDue
+        );
+        if (!paid) revert TransferFailed();
+
+        //transfer premium to writer
+        dai.transfer(option.writer, option.premiumDue);
+
+        optionIdToOption[_optionId].buyer = msg.sender;
+        optionIdToOption[_optionId].optionState = OptionState.Bought;
+        tradersPosition[msg.sender].push(_optionId);
+
+        emit CallOptionBought(msg.sender, _optionId);
     }
 
     function exercisePutOption(uint256 _optionId)
@@ -259,7 +277,7 @@ contract Options is ReentrancyGuard, Auth {
         optionExists(_optionId)
         nonReentrant
     {
-        Option memory option = s_optionIdToOption[_optionId];
+        Option memory option = optionIdToOption[_optionId];
 
         require(msg.sender == option.buyer, "NOT BUYER");
         require(option.optionState == OptionState.Bought, "NEVER BOUGHT");
@@ -278,19 +296,23 @@ contract Options is ReentrancyGuard, Auth {
         //transfer dai to option writer
         dai.transfer(option.writer, option.strike);
 
-        s_optionIdToOption[_optionId].optionState = OptionState.Exercised;
+        optionIdToOption[_optionId].optionState = OptionState.Exercised;
 
         emit PutOptionExercised(msg.sender, _optionId);
     }
+
+    /**************************/
+    /* EXTRA OPTION FUNCTIONS */
+    /************************/
 
     function optionExpiresWorthless(uint256 _optionId)
         external
         optionExists(_optionId)
     {
-        Option memory option = s_optionIdToOption[_optionId];
+        Option memory option = optionIdToOption[_optionId];
 
         require(option.optionState == OptionState.Bought, "NEVER BOUGHT");
-        require(s_optionIdToOption[_optionId].buyer == msg.sender, "NOT BUYER");
+        require(optionIdToOption[_optionId].buyer == msg.sender, "NOT BUYER");
         require(option.expiration > block.timestamp, "NOT EXPIRED");
 
         uint256 marketPrice = option.amount * getPriceFeed();
@@ -298,21 +320,21 @@ contract Options is ReentrancyGuard, Auth {
         if (option.optionType == OptionType.Call) {
             //For call, if market < strike, call options expire worthless
             require(marketPrice < option.strike, "PRICE NOT LESS THAN STRIKE");
-            s_optionIdToOption[_optionId].optionState = OptionState.Cancelled;
+            optionIdToOption[_optionId].optionState = OptionState.Cancelled;
         } else {
             //For put, if market > strike, put options expire worthless
             require(
                 marketPrice > option.strike,
                 "PRICE NOT GREATER THAN STRIKE"
             );
-            s_optionIdToOption[_optionId].optionState = OptionState.Cancelled;
+            optionIdToOption[_optionId].optionState = OptionState.Cancelled;
         }
 
         emit OptionExpiresWorthless(msg.sender, _optionId);
     }
 
     function retrieveExpiredFunds(uint256 _optionId) external nonReentrant {
-        Option memory option = s_optionIdToOption[_optionId];
+        Option memory option = optionIdToOption[_optionId];
 
         require(option.optionState == OptionState.Cancelled);
         require(option.expiration < block.timestamp, "NOT EXPIRED");
@@ -323,6 +345,21 @@ contract Options is ReentrancyGuard, Auth {
         emit FundsRetrieved(msg.sender, _optionId, option.collateral);
     }
 
+    /*****************************/
+    /* Owner Withdraw Functions */
+    /****************************/
+
+    function withdrawEth(address payable _to) public requiresAuth {
+        (bool withdrawSuccess, ) = _to.call{value: address(this).balance}("");
+        require(withdrawSuccess, "ETH WITHDRAW FAILED");
+    }
+
+    function withdrawDai(address payable _to) public requiresAuth {
+        uint256 daiBalance = dai.balanceOf(address(this));
+        (bool withdrawSuccess, ) = _to.call{value: daiBalance}("");
+        require(withdrawSuccess, "DAI WITHDRAW FAILED");
+    }
+
     /*********************************/
     /* Oracle (Chainlink) Functions */
     /*********************************/
@@ -330,18 +367,6 @@ contract Options is ReentrancyGuard, Auth {
     function getPriceFeed() public view returns (uint256) {
         (, int256 price, , , ) = daiEthPriceFeed.latestRoundData();
         return (uint256(price)) / 1e18;
-    }
-
-    /*********************************/
-    /* Only Owner (or DAO) Functions */
-    /*********************************/
-
-    function setAllowedToken(address token, address priceFeed)
-        external
-        requiresAuth
-    {
-        s_tokenToEthFeed[token] = priceFeed;
-        emit AllowedTokenSet(token, priceFeed);
     }
 
     /**************/
@@ -358,22 +383,16 @@ contract Options is ReentrancyGuard, Auth {
         _;
     }
 
-    // modifier isAllowedToken(address token) {
-    //     if (s_tokenToEthFeed[token] == address(0)) revert TokenNotAllowed(token);
-    //     _;
-    // }
-
     modifier optionExists(uint256 optionId) {
-        if (s_optionIdToOption[optionId].writer == address(0))
+        if (optionIdToOption[optionId].writer == address(0))
             revert OptionNotValid(optionId);
         _;
     }
 
     modifier isValidOpenOption(uint256 optionId) {
         if (
-            s_optionIdToOption[optionId].optionState != OptionState.Open ||
-            s_optionIdToOption[optionId].expiration > block.timestamp
-            // || s_optionIdToOption[optionId].buyer == address(0)
+            optionIdToOption[optionId].optionState != OptionState.Open ||
+            optionIdToOption[optionId].expiration > block.timestamp
         ) revert OptionNotValid(optionId);
         _;
     }
